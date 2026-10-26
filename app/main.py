@@ -10,6 +10,8 @@ from psycopg import errors
 from .core import InvalidJournal, identifier, signature_ok
 from .db import database
 from .service import create_test_journal, reverse_test_journal, get_test_journal
+from .finance_read import register_finance_read_routes
+
 
 app = FastAPI(title='FAME Ledger Authority', version='F1E.1', docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -119,3 +121,7 @@ async def readiness(auth=Depends(verify_hmac)):
             'concurrentCommitProofVerified':False,'crashRecoveryProofVerified':False,
             'twoMemberIsolationProofVerified':False,'providerEvidenceVerified':False,
             'readyForRealMoney':False,'paymentsEnabled':False}
+    
+    
+    
+register_finance_read_routes(app, verify_hmac, consume_nonce)
