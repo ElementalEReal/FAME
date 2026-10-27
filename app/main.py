@@ -11,9 +11,13 @@ from .core import InvalidJournal, identifier, signature_ok
 from .db import database
 from .service import create_test_journal, reverse_test_journal, get_test_journal
 from .finance_read import register_finance_read_routes
+from app.fame_stripe_webhook import router as fame_stripe_router
+
+
 
 
 app = FastAPI(title='FAME Ledger Authority', version='F1E.1', docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(fame_stripe_router)
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid')
