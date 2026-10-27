@@ -1,6 +1,6 @@
-"""FAME F2.2: Stripe *snapshot* event intake only.
+"""FAME F2.2 plus F2.3 TEST webhook intake / order observations.
 
-No orders, ledger postings, fulfillment, payouts, or transfers occur here.
+No direct ledger postings, product fulfillment, manual payouts, or refunds occur here.
 Mount with app.include_router(router) in app/main.py.
 """
 import os
@@ -20,6 +20,7 @@ EVENT_TYPES = frozenset({
     "checkout.session.async_payment_failed",
     "payment_intent.payment_failed",
     "charge.refunded",
+    "account.updated",
 })
 
 
@@ -91,6 +92,10 @@ async def stripe_webhook(request: Request):
                     (event_id, event_type, obj_id, event.get("account"), event.get("created")),
                 )
                 inserted = cur.rowcount == 1
+                if inserted:
+                    # Same database transaction as event intake: either both persist or neither.
+                    from app.fame_stripe_event_apply import apply_verified_event
+                    apply_verified_event(cur, event)
             conn.commit()
     except Exception:
         # Do not acknowledge events we failed to persist: Stripe will retry.
