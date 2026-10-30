@@ -261,8 +261,25 @@ async def seller_onboard(request: Request, payload: SellerRequest):
             row = cur.fetchone()
     if row:
         account_id = row[0]
-        # Don't send an existing v1 account into a v2-only status or creation path.
-        v2_account_status(account_id)
+        # Reuse only the existing, TEST-mode Stripe account. Never create a second seller.
+        before = v2_account_status(account_id)
+        if before["recipient_stripe_transfers"] == "unknown":
+            # Accounts v2: add the Recipient transfer capability separately, rather
+            # than combining it with Merchant during account creation.
+            # This can be rejected for unsupported Connect configurations;
+            # stripe_v2 logs the exact field paths and fails closed on errors.
+            from urllib.parse import quote
+            stripe_v2(
+                "POST",
+                "/v2/core/accounts/" + quote(account_id, safe=""),
+                {"configuration": {"recipient": {"capabilities": {
+                    "stripe_balance": {"stripe_transfers": {"requested": True}}
+                }}}},
+                idempotency_key="fame-v2-recipient-request-v1-" + hashlib.sha256(account_id.encode()).hexdigest(),
+            )
+            # A capability request is NOT proof of approval. Checkout remains
+            # blocked until a fresh status response reports all capabilities active.
+            v2_account_status(account_id)
     else:
         # Express + destination charges: platform bears fee and negative-balance liability.
         # Responsibilities cannot be changed after merchant configuration is added.
