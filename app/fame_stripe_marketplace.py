@@ -191,14 +191,34 @@ def stripe_v2(method: str, path: str, data=None, idempotency_key=None):
         with urlrequest.urlopen(req, timeout=18) as response:
             return json.load(response)
     except urlerror.HTTPError as exc:
-        # Stripe error details are server-only; never send raw response to the iframe.
+        # Log only validation field paths, never full Stripe responses, request
+        # bodies, personal account details, or authentication credentials.
+        error_code = "unknown"
+        field_paths = []
         try:
             error_data = json.loads(exc.read().decode("utf-8"))
-            error_obj = error_data.get("error", {})
-            error_code = error_obj.get("code", "unknown") if isinstance(error_obj, dict) else "unknown"
+            if isinstance(error_data, dict):
+                error_obj = error_data.get("error")
+                if not isinstance(error_obj, dict):
+                    error_obj = error_data
+                error_code = str(error_obj.get("code", "unknown"))[:80]
+                invalid_fields = error_obj.get("invalid_fields")
+                if invalid_fields is None:
+                    invalid_fields = error_data.get("invalid_fields", [])
+                if isinstance(invalid_fields, list):
+                    for field in invalid_fields[:10]:
+                        if isinstance(field, dict):
+                            path = field.get("field") or field.get("path") or field.get("name")
+                            if isinstance(path, str) and len(path) <= 200:
+                                field_paths.append(path)
+                        elif isinstance(field, str) and len(field) <= 200:
+                            field_paths.append(field)
         except (ValueError, UnicodeError):
-            error_code = "unknown"
-        log.error("STRIPE_V2_REQUEST_FAILED method=%s status=%s code=%s", method, exc.code, error_code)
+            pass
+        log.error(
+            "STRIPE_V2_REQUEST_FAILED method=%s status=%s code=%s invalid_fields=%s",
+            method, exc.code, error_code, field_paths
+        )
         raise HTTPException(502, "FAME_STRIPE_V2_PROVIDER_ERROR") from None
     except (urlerror.URLError, TimeoutError):
         log.exception("STRIPE_V2_TRANSPORT_FAILURE")
