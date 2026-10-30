@@ -269,15 +269,15 @@ async def seller_onboard(request: Request, payload: SellerRequest):
         account = stripe_v2("POST", "/v2/core/accounts", {
             "dashboard": "express",
             "identity": {"country": "us"},
+            # Merchant-only account creation: Stripe rejected configuration.recipient.
+            # Do not assume recipient/transfer permissions; checkout remains fail-closed.
             "configuration": {
-                "merchant": {"capabilities": {"card_payments": {"requested": True}}},
-                "recipient": {"capabilities": {"stripe_balance": {
-                    "stripe_transfers": {"requested": True}}}}
+                "merchant": {"capabilities": {"card_payments": {"requested": True}}}
             },
             "defaults": {"responsibilities": {
                 "fees_collector": "application", "losses_collector": "application"}},
             "metadata": {"fame_seller_key": payload.seller_key}
-        }, idempotency_key="fame-v2-seller-" + hashlib.sha256(payload.seller_key.encode()).hexdigest())
+        }, idempotency_key="fame-v2-merchant-only-v1-" + hashlib.sha256(payload.seller_key.encode()).hexdigest())
         if account.get("livemode") is not False or not str(account.get("id", "")).startswith("acct_"):
             raise HTTPException(502, "INVALID_STRIPE_TEST_ACCOUNT")
         account_id = account["id"]
