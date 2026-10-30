@@ -356,3 +356,6 @@ register_finance_read_routes(
     verify_hmac,
     consume_nonce,
 )
+
+from .fame_provider_bridge import register_provider_bridge_routes
+register_provider_bridge_routes(app, verify_hmac, consume_nonce)

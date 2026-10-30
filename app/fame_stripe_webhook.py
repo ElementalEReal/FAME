@@ -96,6 +96,8 @@ async def stripe_webhook(request: Request):
                     # Same database transaction as event intake: either both persist or neither.
                     from app.fame_stripe_event_apply import apply_verified_event
                     apply_verified_event(cur, event)
+                    cur.execute("""UPDATE fame_stripe.intake_events SET processing_status='PROCESSED'
+                                   WHERE stripe_event_id=%s""",(event_id,))
             conn.commit()
     except Exception:
         # Do not acknowledge events we failed to persist: Stripe will retry.

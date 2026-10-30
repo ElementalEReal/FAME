@@ -176,7 +176,7 @@ async def create_checkout(request: Request, payload: CheckoutRequest):
         with conn.cursor() as cur:
             cur.execute("""UPDATE fame_stripe.marketplace_orders
                    SET stripe_session_id=%s,status='PENDING',updated_at=now() WHERE order_id=%s""", (session.id,order_id))
-    return {"url":session.url, "order_id":order_id}
+    return {"url":session.url, "order_id":order_id, "stripe_session_id":session.id}
 
 
 @router.post("/seller/orders")
