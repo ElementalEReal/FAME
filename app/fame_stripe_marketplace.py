@@ -102,6 +102,7 @@ class SellerRequest(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
+    checkout_request_id: uuid.UUID  # Stable UUID; Wix MUST reuse on retries.
     listing_id: str = Field(min_length=1, max_length=200)
     seller_key: str = Field(min_length=3, max_length=200)
     buyer_key: str = Field(min_length=3, max_length=200)
@@ -292,123 +293,21 @@ async def seller_status(request: Request, payload: SellerRequest):
     return state
 
 
-def _mark_order_failed(order_id: str) -> None:
-    """Best-effort status update; never conceal the original Stripe failure."""
-    try:
-        with psycopg.connect(db_url(), connect_timeout=5) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE fame_stripe.marketplace_orders "
-                    "SET status='FAILED', updated_at=now() WHERE order_id=%s",
-                    (order_id,),
-                )
-    except Exception as update_exc:
-        log.error("FAME_CHECKOUT_FAILED_STATUS_UPDATE_ERROR type=%s", type(update_exc).__name__)
+def _validate_test_session(session, expected_order_id: str) -> None:
+    """A session URL is not evidence of payment."""
+    sid = str(getattr(session, "id", ""))
+    link = str(getattr(session, "url", ""))
+    if getattr(session, "livemode", None) is not False or not sid.startswith("cs_test_"):
+        raise HTTPException(502, "Stripe TEST session could not be verified")
+    if not link.startswith("https://checkout.stripe.com/"):
+        raise HTTPException(502, "Stripe TEST session URL unavailable")
+    metadata = getattr(session, "metadata", None) or {}
+    if metadata.get("fame_order_id") != expected_order_id:
+        raise HTTPException(502, "Stripe session order mismatch")
 
 
-@router.post("/checkout")
-async def create_checkout(request: Request, payload: CheckoutRequest):
-    await guard(request)
-    if payload.currency.lower() != "usd" or payload.seller_key == payload.buyer_key:
-        raise HTTPException(400, "Unsupported purchase")
-
-    with psycopg.connect(db_url(), connect_timeout=5) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT stripe_account_id FROM fame_stripe.seller_accounts WHERE seller_key=%s",
-                (payload.seller_key,),
-            )
-            seller = cur.fetchone()
-    if not seller:
-        raise HTTPException(409, "Seller must attach an account")
-
-    account = v2_account_status(seller[0])
-    if not account["ready_for_checkout"]:
-        raise HTTPException(409, "Seller onboarding incomplete")
-
-    try:
-        fee_bps = int(os.getenv("FAME_MARKETPLACE_FEE_BPS", "500"))
-    except ValueError:
-        raise HTTPException(503, "Invalid platform fee configuration") from None
-    if not 0 <= fee_bps <= 1000:
-        raise HTTPException(503, "Invalid platform fee configuration")
-    fee_minor = payload.amount_minor * fee_bps // 10_000
-    order_id = str(uuid.uuid4())
-
-    with psycopg.connect(db_url(), connect_timeout=5) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO fame_stripe.marketplace_orders "
-                "(order_id,listing_id,buyer_key,seller_key,item_title,amount_minor,fee_minor) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (order_id, payload.listing_id, payload.buyer_key, payload.seller_key,
-                 payload.item_title, payload.amount_minor, fee_minor),
-            )
-
-    try:
-        success_url = origin_url("FAME_STRIPE_SUCCESS_URL")
-        success_url += ("&" if "?" in success_url else "?") + "session_id={CHECKOUT_SESSION_ID}"
-        session = stripe.checkout.Session.create(
-            mode="payment",
-            payment_method_types=["card"],
-            line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "unit_amount": payload.amount_minor,
-                    "product_data": {"name": payload.item_title},
-                },
-                "quantity": 1,
-            }],
-            payment_intent_data={
-                "application_fee_amount": fee_minor,
-                "transfer_data": {"destination": seller[0]},
-                "metadata": {"fame_order_id": order_id},
-            },
-            metadata={"fame_order_id": order_id},
-            success_url=success_url,
-            cancel_url=origin_url("FAME_STRIPE_CANCEL_URL"),
-            idempotency_key="fame-checkout-" + order_id,
-        )
-    except Exception as exc:
-        # Classify without logging exception text, request data or Stripe responses.
-        stripe_error_class = getattr(getattr(stripe, "error", None), "StripeError", None)
-        is_stripe_error = isinstance(exc, stripe_error_class) if isinstance(stripe_error_class, type) else False
-        label = "FAME_CHECKOUT_STRIPE_FAILED" if is_stripe_error else "FAME_CHECKOUT_INTERNAL_FAILED"
-        code = getattr(exc, "code", None)
-        param = getattr(exc, "param", None)
-        log.error(
-            "%s type=%s code=%s param=%s",
-            label,
-            type(exc).__name__,
-            str(code)[:80] if isinstance(code, str) else None,
-            str(param)[:120] if isinstance(param, str) else None,
-        )
-        _mark_order_failed(order_id)
-        raise HTTPException(502, "Unable to create secure checkout") from None
-
-    # A successful API response is NOT a paid order. Require TEST Session proof.
-    if getattr(session, "livemode", None) is not False:
-        log.error("FAME_CHECKOUT_SESSION_MODE_UNVERIFIED")
-        # The session may exist; don't mark a real provider session as a failed payment.
-        raise HTTPException(502, "Unable to verify TEST checkout session")
-    if not str(getattr(session, "id", "")).startswith("cs_test_") or not str(getattr(session, "url", "")).startswith("https://checkout.stripe.com/"):
-        log.error("FAME_CHECKOUT_SESSION_RESPONSE_INVALID")
-        raise HTTPException(502, "Invalid TEST checkout session")
-
-    try:
-        with psycopg.connect(db_url(), connect_timeout=5) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE fame_stripe.marketplace_orders "
-                    "SET stripe_session_id=%s,status='PENDING',updated_at=now() WHERE order_id=%s",
-                    (session.id, order_id),
-                )
-    except Exception as exc:
-        # Stripe session may already exist; do not return its URL unless tracked.
-        log.error("FAME_CHECKOUT_SESSION_PERSIST_FAILED type=%s", type(exc).__name__)
-        raise HTTPException(503, "Checkout tracking temporarily unavailable") from None
-
-    log.info("FAME_CHECKOUT_TEST_SESSION_CREATED")
+def _session_payload(session, order_id: str) -> dict:
+    _validate_test_session(session, order_id)
     return {
         "url": session.url,
         "order_id": order_id,
@@ -416,6 +315,179 @@ async def create_checkout(request: Request, payload: CheckoutRequest):
         "mode": "test",
         "livemode": False,
     }
+
+
+@router.post("/checkout")
+async def create_checkout(request: Request, payload: CheckoutRequest):
+    await guard(request)
+    if payload.currency != "usd" or payload.seller_key == payload.buyer_key:
+        raise HTTPException(400, "Unsupported purchase")
+
+    # FAME fee policy: marketplace is precisely 500 bps (5%), half-up to
+    # the nearest cent. Never stack production fees on this transaction.
+    if os.getenv("FAME_MARKETPLACE_FEE_BPS", "500") != "500":
+        raise HTTPException(503, "Unexpected FAME fee policy configuration")
+    fee_minor = (payload.amount_minor * 500 + 5_000) // 10_000
+    if fee_minor >= payload.amount_minor:
+        raise HTTPException(400, "Invalid checkout fee")
+
+    with psycopg.connect(db_url(), connect_timeout=5) as lookup_conn:
+        with lookup_conn.cursor() as cur:
+            cur.execute(
+                "SELECT stripe_account_id FROM fame_stripe.seller_accounts "
+                "WHERE seller_key=%s", (payload.seller_key,)
+            )
+            seller = cur.fetchone()
+    if not seller:
+        raise HTTPException(409, "Seller must attach an account")
+    account = v2_account_status(seller[0])
+    if not account["ready_for_checkout"]:
+        raise HTTPException(409, "Seller onboarding incomplete")
+
+    request_id = str(payload.checkout_request_id)
+
+    # A session-level PostgreSQL advisory lock serializes legitimate retries
+    # of the SAME business intent across Render workers. It survives commits
+    # while this connection is open, and releases when the connection closes.
+    # Its hash may collide harmlessly (extra serialization only).
+    with psycopg.connect(db_url(), connect_timeout=5) as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+                    (request_id,)
+                )
+            conn.commit()
+            with conn.cursor() as cur:
+                new_order_id = str(uuid.uuid4())
+                cur.execute(
+                    "INSERT INTO fame_stripe.marketplace_orders "
+                    "(order_id,checkout_request_id,listing_id,buyer_key,seller_key,"
+                    "item_title,amount_minor,fee_minor,currency,status) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'usd','CREATING') "
+                    "ON CONFLICT (checkout_request_id) DO NOTHING",
+                    (new_order_id, payload.checkout_request_id, payload.listing_id,
+                     payload.buyer_key, payload.seller_key, payload.item_title,
+                     payload.amount_minor, fee_minor)
+                )
+                cur.execute(
+                    "SELECT order_id::text,listing_id,buyer_key,seller_key,"
+                    "item_title,amount_minor,fee_minor,currency,status,stripe_session_id "
+                    "FROM fame_stripe.marketplace_orders "
+                    "WHERE checkout_request_id=%s", (payload.checkout_request_id,)
+                )
+                existing = cur.fetchone()
+            conn.commit()
+            if not existing:
+                raise HTTPException(503, "Checkout intent persistence unavailable")
+
+            (order_id, listing_id, buyer_key, seller_key, title,
+             amount_minor, stored_fee, currency, status, existing_session) = existing
+            if (listing_id != payload.listing_id or buyer_key != payload.buyer_key or
+                seller_key != payload.seller_key or title != payload.item_title or
+                amount_minor != payload.amount_minor or stored_fee != fee_minor or
+                currency != "usd"):
+                raise HTTPException(409, "Checkout request ID is already bound to another purchase")
+
+            if status in ("PAID", "REFUNDED", "PARTIALLY_REFUNDED", "FAILED"):
+                raise HTTPException(409, "Checkout intent is no longer reusable")
+
+            if existing_session:
+                # A previously created Checkout Session is the only valid
+                # session for this request ID. Do not silently create another.
+                try:
+                    session = stripe.checkout.Session.retrieve(existing_session)
+                except Exception as exc:
+                    log.error("FAME_CHECKOUT_RECOVER_SESSION_FAILED type=%s",
+                              type(exc).__name__)
+                    raise HTTPException(503, "Checkout session recovery unavailable") from None
+                _validate_test_session(session, order_id)
+                if getattr(session, "status", None) != "open":
+                    raise HTTPException(409, "Checkout session is no longer open")
+                return _session_payload(session, order_id)
+
+            if status != "CREATING":
+                raise HTTPException(409, "Checkout intent cannot be resumed")
+
+            # Stable Stripe key uses the persisted order ID, so retries after
+            # a timeout/Render restart retrieve the same Session from Stripe
+            # within Stripe's idempotency retention window. Once that period
+            # has elapsed, automated retries must be held for reconciliation;
+            # do not issue a fresh session under the same intent.
+            created_at = None
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT created_at FROM fame_stripe.marketplace_orders WHERE order_id=%s",
+                    (order_id,)
+                )
+                created_at = cur.fetchone()[0]
+            conn.commit()
+            from datetime import datetime, timezone, timedelta
+            if created_at < datetime.now(timezone.utc) - timedelta(hours=20):
+                raise HTTPException(409, "Checkout request requires reconciliation")
+
+            try:
+                success_url = origin_url("FAME_STRIPE_SUCCESS_URL")
+                success_url += ("&" if "?" in success_url else "?") + "session_id={CHECKOUT_SESSION_ID}"
+                session = stripe.checkout.Session.create(
+                    mode="payment",
+                    payment_method_types=["card"],
+                    line_items=[{
+                        "price_data": {
+                            "currency": "usd",
+                            "unit_amount": amount_minor,
+                            "product_data": {"name": title},
+                        },
+                        "quantity": 1,
+                    }],
+                    payment_intent_data={
+                        "application_fee_amount": stored_fee,
+                        "transfer_data": {"destination": seller[0]},
+                        "metadata": {"fame_order_id": order_id},
+                    },
+                    metadata={"fame_order_id": order_id},
+                    success_url=success_url,
+                    cancel_url=origin_url("FAME_STRIPE_CANCEL_URL"),
+                    idempotency_key="fame-checkout-" + order_id,
+                )
+                _validate_test_session(session, order_id)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                # Ambiguous Stripe/network failures cannot be labeled FAILED:
+                # Stripe may already have created the session. Preserve the
+                # stable order and retry using the same Stripe key.
+                log.error("FAME_CHECKOUT_CREATION_UNCERTAIN type=%s",
+                          type(exc).__name__)
+                raise HTTPException(503, "Checkout temporarily unavailable") from None
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE fame_stripe.marketplace_orders "
+                    "SET stripe_session_id=%s,status='PENDING',updated_at=now() "
+                    "WHERE order_id=%s AND status='CREATING' "
+                    "AND stripe_session_id IS NULL",
+                    (session.id, order_id)
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    raise HTTPException(409, "Checkout state changed; reconciliation required")
+            conn.commit()
+            log.info("FAME_CHECKOUT_TEST_SESSION_CREATED_OR_RECOVERED")
+            return _session_payload(session, order_id)
+        finally:
+            # Closing the connection also releases the session advisory lock.
+            # Explicit unlock is useful when connection cleanup is deferred.
+            try:
+                conn.rollback()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                        (request_id,)
+                    )
+                conn.commit()
+            except Exception:
+                log.error("FAME_CHECKOUT_ADVISORY_LOCK_CLEANUP_FAILED")
 
 
 @router.post("/seller/orders")
