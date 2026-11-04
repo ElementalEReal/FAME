@@ -34,6 +34,6 @@ jobs:
       - name: Run F1 Payment Proof Tests
         run: |
           python -m unittest discover \
-            -s tests \
+            -s app/tests \
             -p 'test_proof.py' \
             -v
