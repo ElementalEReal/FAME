@@ -1,1 +1,39 @@
 
+name: FAME F1 Financial Tests
+
+on:
+  push:
+    branches:
+      - f1-financial-reconciliation-test
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  financial-tests:
+    name: Verify Financial Engine
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout FAME
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile F1 Modules
+        run: |
+          python -m py_compile \
+            app/fame_stripe_reconcile_test.py \
+            app/fame_stripe_outbox_dispatch_test.py \
+            app/fame_marketplace_posting_test.py
+
+      - name: Run F1 Payment Proof Tests
+        run: |
+          python -m unittest discover \
+            -s tests \
+            -p 'test_proof.py' \
+            -v
