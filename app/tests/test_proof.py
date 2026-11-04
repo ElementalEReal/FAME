@@ -3,7 +3,8 @@ import unittest
 import uuid
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
-from fame_stripe_reconcile_test import verify_payment, _outbox_payload, ReconcileRejected, ReconcileRetry
+from app.fame_stripe_reconcile_test import verify_payment, _outbox_payload, ReconcileRejected, ReconcileRetry
+
 
 ORDER_ID = str(uuid.UUID('a7e948be-88a0-4d19-a71c-c1f50e6a08c1'))
 SID = 'cs_test_1234567890123'
