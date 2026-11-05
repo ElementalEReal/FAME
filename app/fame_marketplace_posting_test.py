@@ -102,8 +102,8 @@ def post_marketplace_paid_test(conn: Any, evidence: VerifiedMarketplacePayment) 
                     SELECT 1 FROM fame_finance.actor_grants
                     WHERE tenant_id=%s AND project_id=%s AND actor_id=%s
                       AND permission='POST_TEST' AND active=true
-                    FOR SHARE
                 """, (MARKETPLACE_TENANT, MARKETPLACE_PROJECT, POSTER_ACTOR))
+
                 if cur.fetchone() is None:
                     raise PostingRejected("FAME_MARKETPLACE_POST_GRANT_MISSING")
 
