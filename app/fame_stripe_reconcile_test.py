@@ -94,3 +94,5 @@ def verify_payment(session: Any, intent: Any, *, expected_order_id: str,
     if prop(intent, 'application_fee_amount') != expected_fee:
         raise ReconcileRejected('FAME_PROOF_APPLICATION_FEE_MISMATCH')
     return PaymentProof(order_uuid, sid, pi_id, expected_seller_account,
+                        expected_amount, expected_fee, 'USD')
+
