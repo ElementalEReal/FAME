@@ -111,6 +111,8 @@ def decide_live_listing(*, listing_id: str, request_id: str | UUID,
     verify live seller readiness. DO NOT expose caller-supplied reviewer IDs.
     """
     _enabled()
+    if os.getenv("FAME_LIVE_APPROVAL_WRITES_ENABLED") != "1":
+        raise PurchaseRejected("LIVE_APPROVAL_WRITES_DISABLED")
     uid = _uuid4(request_id)
     if action not in ("APPROVE", "REVOKE"):
         raise PurchaseRejected("LIVE_ACTION_INVALID")
