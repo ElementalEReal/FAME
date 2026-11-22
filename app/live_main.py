@@ -1,4 +1,4 @@
-﻿"""Isolated FAME LIVE application entry point."""
+"""Isolated FAME LIVE application entry point."""
 
 from fastapi import FastAPI
 
@@ -41,7 +41,22 @@ def _fame_snapshot_probe():
         or parsed.fragment
         or len(key.encode("utf-8")) < 32
     ):
-        print("FAME_PROBE CONFIG_INVALID", flush=True)
+        errors = []
+        if not url:
+            errors.append("URL_MISSING")
+        elif parsed.scheme != "https":
+            errors.append("URL_NOT_HTTPS")
+        elif parsed.hostname not in ("elementaleye.co", "www.elementaleye.co"):
+            errors.append("URL_HOST_MISMATCH")
+        elif parsed.path != "/_functions/fameLiveSnapshot":
+            errors.append("URL_PATH_MISMATCH")
+        elif parsed.query or parsed.fragment:
+            errors.append("URL_HAS_EXTRA_COMPONENTS")
+        if not key:
+            errors.append("SECRET_MISSING")
+        elif len(key.encode("utf-8")) < 32:
+            errors.append("SECRET_TOO_SHORT")
+        print("FAME_PROBE CONFIG_INVALID:", ",".join(errors), flush=True)
         return
 
     body = json.dumps(
