@@ -12,3 +12,98 @@ app = FastAPI(
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     return {"status": "ok", "service": "fame-live"}
+
+# FAME_SNAPSHOT_PROBE_V1
+# Read-only connectivity probe; disabled by default.
+import asyncio
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import time
+import urllib.error
+import urllib.request
+from urllib.parse import urlsplit
+
+
+def _fame_snapshot_probe():
+    url = os.environ.get("FAME_LIVE_WIX_SNAPSHOT_URL", "")
+    key = os.environ.get("FAME_LIVE_SNAPSHOT_SECRET", "")
+
+    parsed = urlsplit(url)
+
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in ("elementaleye.co", "www.elementaleye.co")
+        or parsed.path != "/_functions/fameLiveSnapshot"
+        or parsed.query
+        or parsed.fragment
+        or len(key.encode("utf-8")) < 32
+    ):
+        print("FAME_PROBE CONFIG_INVALID", flush=True)
+        return
+
+    body = json.dumps(
+        {"listing_id": "fame-connectivity-probe-not-real"},
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+
+    for label, valid in (
+        ("INVALID_SIGNATURE", False),
+        ("VALID_SIGNATURE", True),
+    ):
+        ts = str(int(time.time()))
+        nonce = secrets.token_hex(24)
+        digest = hashlib.sha256(body).hexdigest()
+
+        message = "\n".join((
+            "POST",
+            "/_functions/fameLiveSnapshot",
+            ts,
+            nonce,
+            digest,
+        ))
+
+        signature = hmac.new(
+            key.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest() if valid else "0" * 64
+
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "x-fame-timestamp": ts,
+                "x-fame-nonce": nonce,
+                "x-fame-signature": signature,
+            },
+        )
+
+        try:
+            with opener.open(request, timeout=10) as response:
+                status = response.status
+        except urllib.error.HTTPError as error:
+            status = error.code
+        except Exception:
+            print(f"FAME_PROBE {label}: NETWORK_ERROR", flush=True)
+            continue
+
+        print(f"FAME_PROBE {label}: HTTP {status}", flush=True)
+
+
+@app.on_event("startup")
+async def fame_snapshot_probe_startup():
+    if os.environ.get("FAME_LIVE_SNAPSHOT_PROBE_ENABLED") != "1":
+        return
+    await asyncio.to_thread(_fame_snapshot_probe)
+
