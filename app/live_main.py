@@ -122,3 +122,6 @@ async def fame_snapshot_probe_startup():
         return
     await asyncio.to_thread(_fame_snapshot_probe)
 
+
+from app.live_reviewer_ping import router as reviewer_ping_router
+app.include_router(reviewer_ping_router)
