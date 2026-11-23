@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+from app.live_catalog_governance import VerifiedListing, _valid
 from app.live_db import live_database
 from app.live_policy import Catalog, Intent, PurchaseRejected, authorize
 
@@ -44,7 +45,8 @@ def _row_to_order(row: tuple, reused: bool) -> AuthorizedOrder:
 
 
 def create_purchase_intent(*, intent_id: str | UUID, listing_id: str,
-                           buyer_profile_id: str) -> AuthorizedOrder:
+                           buyer_profile_id: str,
+                           fetch_verified_listing=None) -> AuthorizedOrder:
     """Create or recover a single immutable, server-authorized purchase order.
 
     Caller MUST authenticate the buyer independently and MUST NOT expose this
@@ -59,7 +61,18 @@ def create_purchase_intent(*, intent_id: str | UUID, listing_id: str,
     if os.getenv("FAME_LIVE_INTENTS_ENABLED") != "1":
         raise PurchaseRejected("LIVE_INTENTS_DISABLED")
     uid = require_uuid4(intent_id)
-    # This function intentionally never reads a price or seller from a caller.
+
+    # LIVE_PURCHASE_FRESHNESS_V1
+    # The callback must be a trusted server-side Wix + seller verifier.
+    # Never accept a browser-supplied snapshot.
+    if not callable(fetch_verified_listing):
+        raise PurchaseRejected("LIVE_FRESH_SOURCE_REQUIRED")
+
+    snapshot = fetch_verified_listing(listing_id)
+    _valid(snapshot, listing_id)
+
+    # Network verification occurs before opening the DB transaction.
+    # The locked catalog record is compared below.
     with live_database(read_only=False) as conn:
         # Existing live_db creates an explicit outer transaction. Lock is scoped
         # to that transaction and will be released even on rollback.
@@ -75,6 +88,7 @@ def create_purchase_intent(*, intent_id: str | UUID, listing_id: str,
             raw = cur.fetchone()
             if raw is None:
                 raise PurchaseRejected("LIVE_LISTING_NOT_FOUND")
+            _require_fresh_catalog(raw, snapshot)
             catalog = Catalog(*raw)
             intent = Intent(uid, listing_id, buyer_profile_id,
                             catalog.seller_profile_id, catalog.amount_minor,
@@ -121,3 +135,32 @@ def create_purchase_intent(*, intent_id: str | UUID, listing_id: str,
                 decision['approval_revision'],
             ))
             return _row_to_order(cur.fetchone(), reused=False)
+
+
+def _require_fresh_catalog(raw, snapshot):
+    """Compare a fresh trusted snapshot to the locked catalog record."""
+    if type(snapshot) is not VerifiedListing:
+        raise PurchaseRejected("LIVE_TRUSTED_SNAPSHOT_REQUIRED")
+
+    stored = (
+        raw[0],  # listing_id
+        raw[1],  # seller_profile_id
+        raw[2],  # seller_stripe_account_id
+        raw[3],  # title
+        raw[5],  # currency
+        raw[4],  # amount_minor
+        raw[6],  # approval_fingerprint
+    )
+
+    current = (
+        snapshot.listing_id,
+        snapshot.seller_profile_id,
+        snapshot.seller_stripe_account_id,
+        snapshot.title.strip(),
+        snapshot.currency,
+        snapshot.amount_minor,
+        snapshot.approval_fingerprint,
+    )
+
+    if stored != current:
+        raise PurchaseRejected("LIVE_PURCHASE_SOURCE_STALE")

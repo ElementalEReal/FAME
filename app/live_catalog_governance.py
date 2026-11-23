@@ -182,3 +182,87 @@ def decide_live_listing(*, listing_id: str, request_id: str | UUID,
             """, (uid,uid,listing_id,revision,reviewer,action,
                   new_fingerprint,reason.strip()))
             return revision
+
+
+def refresh_disabled_listing(
+    *,
+    listing_id: str,
+    fetch_verified_listing: Callable[[str], VerifiedListing],
+) -> int:
+    """Refresh a registered DISABLED listing from a trusted source.
+
+    Never enables or approves a listing. An approved listing must first
+    be revoked through the separately audited reviewer workflow.
+    """
+    _enabled()
+
+    if not isinstance(listing_id, str) or not _ID.fullmatch(listing_id):
+        raise PurchaseRejected("LIVE_LISTING_ID_INVALID")
+
+    snapshot = fetch_verified_listing(listing_id)
+    _valid(snapshot, listing_id)
+
+    expected = (
+        snapshot.listing_id,
+        snapshot.seller_profile_id,
+        snapshot.seller_stripe_account_id,
+        snapshot.title.strip(),
+        snapshot.currency,
+        snapshot.amount_minor,
+        snapshot.approval_fingerprint,
+    )
+
+    with live_database(read_only=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT listing_id,seller_profile_id,seller_stripe_account_id,
+                       title,currency,amount_minor,approval_fingerprint,
+                       approval_revision,enabled
+                  FROM fame_live.catalog
+                 WHERE listing_id=%s
+                 FOR UPDATE
+            """, (listing_id,))
+
+            row = cur.fetchone()
+
+            if row is None:
+                raise PurchaseRejected("LIVE_LISTING_NOT_REGISTERED")
+
+            if row[8]:
+                raise PurchaseRejected("LIVE_REVOKE_BEFORE_REFRESH")
+
+            if row[:7] == expected:
+                return row[7]
+
+            revision = row[7] + 1
+
+            cur.execute("""
+                UPDATE fame_live.catalog
+                   SET seller_profile_id=%s,
+                       seller_stripe_account_id=%s,
+                       title=%s,
+                       currency=%s,
+                       amount_minor=%s,
+                       approval_fingerprint=%s,
+                       approval_revision=%s,
+                       enabled=FALSE,
+                       updated_at=now()
+                 WHERE listing_id=%s
+                   AND approval_revision=%s
+                   AND enabled=FALSE
+            """, (
+                snapshot.seller_profile_id,
+                snapshot.seller_stripe_account_id,
+                snapshot.title.strip(),
+                snapshot.currency,
+                snapshot.amount_minor,
+                snapshot.approval_fingerprint,
+                revision,
+                listing_id,
+                row[7],
+            ))
+
+            if cur.rowcount != 1:
+                raise PurchaseRejected("LIVE_CATALOG_REFRESH_CONFLICT")
+
+            return revision
