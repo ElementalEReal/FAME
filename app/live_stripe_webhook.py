@@ -1,4 +1,4 @@
-﻿"""LIVE-only Stripe *snapshot* event intake. No TEST imports or auto-mount.
+"""LIVE-only Stripe *snapshot* event intake. No TEST imports or auto-mount.
 
 To be mounted later explicitly in the isolated LIVE app after acceptance.
 Does not initiate payouts, refunds, transfers, or fulfillment.
@@ -68,4 +68,3 @@ async def live_stripe_webhook(request: Request):
         # Stripe retries; investigate if this repeats.
         log.exception("FAME LIVE webhook transaction failed")
         raise HTTPException(503, "LIVE_WEBHOOK_PROCESSING_UNAVAILABLE") from None
-
