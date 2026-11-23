@@ -1,4 +1,4 @@
-"""LIVE-only Stripe *snapshot* event intake. No TEST imports or auto-mount.
+﻿"""LIVE-only Stripe *snapshot* event intake. No TEST imports or auto-mount.
 
 To be mounted later explicitly in the isolated LIVE app after acceptance.
 Does not initiate payouts, refunds, transfers, or fulfillment.
@@ -31,11 +31,12 @@ def verify_live_signature(raw_body: bytes, signature: str):
         event = stripe.Webhook.construct_event(raw_body, signature, secret, tolerance=300)
     except Exception as exc:
         raise SettlementRejected("LIVE_WEBHOOK_SIGNATURE_INVALID") from exc
+    try:
+        event = json.loads(raw_body)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise SettlementRejected("LIVE_WEBHOOK_EVENT_INVALID") from exc
     if not isinstance(event, dict):
-        try:
-            event = event.to_dict_recursive()
-        except Exception as exc:
-            raise SettlementRejected("LIVE_WEBHOOK_EVENT_INVALID") from exc
+        raise SettlementRejected("LIVE_WEBHOOK_EVENT_INVALID")
     if event.get("livemode") is not True:
         raise SettlementRejected("LIVE_WEBHOOK_MODE_MISMATCH")
     return event
@@ -67,3 +68,4 @@ async def live_stripe_webhook(request: Request):
         # Stripe retries; investigate if this repeats.
         log.exception("FAME LIVE webhook transaction failed")
         raise HTTPException(503, "LIVE_WEBHOOK_PROCESSING_UNAVAILABLE") from None
+
