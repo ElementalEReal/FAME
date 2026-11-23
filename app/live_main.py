@@ -125,3 +125,21 @@ async def fame_snapshot_probe_startup():
 
 from app.live_reviewer_ping import router as reviewer_ping_router
 app.include_router(reviewer_ping_router)
+
+# FAME_LIVE_GOVERNANCE_WIRING_V1
+# This router is absent unless the independently controlled
+# LIVE bridge is explicitly enabled.
+from app.live_governance_routes import router as live_governance_router
+from app.live_seller_resolver import resolve_live_seller
+from app.live_wix_bridge_adapter import (
+    configure_wix_adapters,
+    install_live_body_cache,
+)
+
+if os.environ.get("FAME_LIVE_BRIDGE_ENABLED") == "1":
+    configure_wix_adapters(
+        app,
+        account_resolver=resolve_live_seller,
+    )
+    install_live_body_cache(app)
+    app.include_router(live_governance_router)
