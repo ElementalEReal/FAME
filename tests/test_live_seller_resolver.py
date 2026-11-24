@@ -8,7 +8,7 @@ SELLER = 'seller_A'
 WHEN = datetime.now(timezone.utc)
 
 def acct(*, live=True, seller=SELLER, card='active', transfers='active', payouts='active', aid=ACCOUNT):
-    return {'id':aid,'livemode':live,'metadata':{'fame_seller_key':seller},
+    return {'id':aid,'livemode':live,'metadata':{'fame_seller_key':seller},'applied_configurations':['recipient'],
             'configuration':{'merchant':{'capabilities':{
                 'card_payments':{'status':card},'stripe_balance':{'payouts':{'status':payouts}}}},
                 'recipient':{'capabilities':{'stripe_balance':{'stripe_transfers':{'status':transfers}}}}}}

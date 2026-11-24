@@ -42,9 +42,8 @@ def _stripe_get(account_id: str):
     # No attacker-controlled URL; account id is validated before call.
     from urllib.parse import urlencode
     query = urlencode([
-        ("include[0]", "configuration.merchant"),
-        ("include[1]", "configuration.recipient"),
-        ("include[2]", "requirements"),
+        ("include[0]", "configuration.recipient"),
+        ("include[1]", "requirements"),
     ])
     url = "https://api.stripe.com/v2/core/accounts/" + quote(account_id, safe="") + "?" + query
     req = Request(url, headers={
@@ -99,22 +98,26 @@ def resolve_live_seller(seller_profile_id: str, *, lookup=None, stripe_get=None)
     metadata = account.get("metadata") or {}
     if not isinstance(metadata, dict) or metadata.get("fame_seller_key") != seller_profile_id:
         raise PurchaseRejected("LIVE_SELLER_OWNERSHIP_MISMATCH")
-    conf = account.get("configuration") or {}
+    # FAME is merchant of record for destination charges: the connected
+    # seller needs recipient transfers, not seller-side direct card charges.
+    # Accounts v2 returns null configuration fields unless explicitly included.
+    applied = account.get("applied_configurations")
+    if not isinstance(applied, list) or "recipient" not in applied:
+        return (account_id, False)
+    conf = account.get("configuration")
     if not isinstance(conf, dict):
         raise PurchaseRejected("LIVE_STRIPE_RESPONSE_INVALID")
-    merchant = conf.get("merchant") or {}
-    recipient = conf.get("recipient") or {}
-    if not isinstance(merchant, dict) or not isinstance(recipient, dict):
+    recipient = conf.get("recipient")
+    if not isinstance(recipient, dict):
         raise PurchaseRejected("LIVE_STRIPE_RESPONSE_INVALID")
-    mc = merchant.get("capabilities") or {}
-    rc = recipient.get("capabilities") or {}
-    if not isinstance(mc, dict) or not isinstance(rc, dict):
+    capabilities = recipient.get("capabilities")
+    if not isinstance(capabilities, dict):
         raise PurchaseRejected("LIVE_STRIPE_RESPONSE_INVALID")
-    transfers = ((rc.get("stripe_balance") or {}).get("stripe_transfers") or {})
-    payouts = ((mc.get("stripe_balance") or {}).get("payouts") or {})
-    ready = all((
-        _status_active(mc.get("card_payments")),
-        _status_active(transfers),
-        _status_active(payouts),
-    ))
-    return (account_id, ready)
+    balance = capabilities.get("stripe_balance")
+    if not isinstance(balance, dict):
+        raise PurchaseRejected("LIVE_STRIPE_RESPONSE_INVALID")
+    transfers = balance.get("stripe_transfers")
+    # Ready here means eligible for destination *transfer*, NOT confirmed
+    # external-bank payout readiness. Payout-method and requirements checks
+    # are a separate acceptance gate before first real-money checkout.
+    return (account_id, _status_active(transfers))
