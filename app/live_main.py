@@ -143,3 +143,9 @@ if os.environ.get("FAME_LIVE_BRIDGE_ENABLED") == "1":
     )
     install_live_body_cache(app)
     app.include_router(live_governance_router)
+# FAME_LIVE_WEBHOOK_WIRING_V1
+# Keep the provider endpoint absent unless explicitly enabled.
+# Financial processing also requires the webhook signing secret.
+if os.environ.get("FAME_LIVE_WEBHOOK_ENABLED") == "1":
+    from app.live_stripe_webhook import router as live_stripe_webhook_router
+    app.include_router(live_stripe_webhook_router)
