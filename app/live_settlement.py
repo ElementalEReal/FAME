@@ -8,7 +8,8 @@ from __future__ import annotations
 import hashlib
 from uuid import UUID, uuid4
 
-SUPPORTED = frozenset({"checkout.session.completed", "checkout.session.async_payment_succeeded", "charge.refunded"})
+SUPPORTED = frozenset({"checkout.session.completed", "checkout.session.async_payment_succeeded",
+                       "checkout.session.async_payment_failed", "charge.refunded"})
 
 
 class SettlementRejected(ValueError):
@@ -46,12 +47,15 @@ def event_facts(event: dict):
         session_id = obj.get("id")
         pi = obj.get("payment_intent")
         amount = obj.get("amount_total")
+        expected_payment_status = ("unpaid" if kind == "checkout.session.async_payment_failed"
+                                   else "paid")
         if (not isinstance(session_id, str) or not session_id.startswith("cs_live_")
                 or not isinstance(pi, str) or not pi.startswith("pi_")
                 or type(amount) is not int or amount < 50 or obj.get("currency") != "usd"
-                or obj.get("payment_status") != "paid"):
+                or obj.get("payment_status") != expected_payment_status):
             raise SettlementRejected("LIVE_PAYMENT_EVIDENCE_INVALID")
-        return {"kind": "PAID", "event_id": eid, "type": kind, "order_id": order_id,
+        return {"kind": ("FAILED" if kind == "checkout.session.async_payment_failed"
+                         else "PAID"), "event_id": eid, "type": kind, "order_id": order_id,
                 "session_id": session_id, "pi": pi, "amount": amount}
     pi = obj.get("payment_intent")
     amount_refunded = obj.get("amount_refunded")
@@ -101,7 +105,7 @@ def apply_live_event(cur, event: dict, raw_body: bytes):
             raise SettlementRejected("LIVE_EVENT_REPLAY_CONFLICT")
         return "duplicate"
 
-    if facts["kind"] == "PAID":
+    if facts["kind"] in ("PAID", "FAILED"):
         cur.execute("""
             SELECT order_id, state, stripe_session_id, stripe_payment_intent_id,
                    amount_minor, fee_minor, currency
@@ -115,7 +119,28 @@ def apply_live_event(cur, event: dict, raw_body: bytes):
         if (sid != facts["session_id"] or amount != facts["amount"] or currency != "usd"
                 or (prior_pi is not None and prior_pi != facts["pi"])):
             raise SettlementRejected("LIVE_PAYMENT_ORDER_MISMATCH")
-        if state == "PENDING":
+        if facts["kind"] == "FAILED":
+            if state == "PENDING":
+                # No payment-clearing journal for a failed collection. Bind the
+                # PaymentIntent to prevent a different PI from later matching.
+                cur.execute("""
+                    UPDATE fame_live.purchase_intents SET state='FAILED',
+                        stripe_payment_intent_id=%s,updated_at=now()
+                    WHERE order_id=%s AND state='PENDING'
+                """, (facts["pi"], oid))
+                if cur.rowcount != 1:
+                    raise SettlementRejected("LIVE_FAILURE_STATE_CONFLICT")
+            elif state == "FAILED":
+                if prior_pi != facts["pi"]:
+                    raise SettlementRejected("LIVE_PAYMENT_INTENT_MISMATCH")
+            elif state in ("PAID", "PARTIALLY_REFUNDED", "REFUNDED"):
+                if prior_pi != facts["pi"]:
+                    raise SettlementRejected("LIVE_PAYMENT_INTENT_MISMATCH")
+                # Late/out-of-order failure signal: never downgrade a paid order.
+                # Preserve the signed event for reconciliation/investigation.
+            else:
+                raise SettlementRejected("LIVE_FAILURE_STATE_INVALID")
+        elif state == "PENDING":
             cur.execute("""
                 UPDATE fame_live.purchase_intents SET state='PAID',
                     stripe_payment_intent_id=%s,updated_at=now()
