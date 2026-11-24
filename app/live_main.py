@@ -149,3 +149,9 @@ if os.environ.get("FAME_LIVE_BRIDGE_ENABLED") == "1":
 if os.environ.get("FAME_LIVE_WEBHOOK_ENABLED") == "1":
     from app.live_stripe_webhook import router as live_stripe_webhook_router
     app.include_router(live_stripe_webhook_router)
+
+# FAME_LIVE_SELLER_ENROLLMENT_WIRING_V1
+# Registration only. Enrollment remains disabled unless separately enabled.
+if os.environ.get("FAME_LIVE_SELLER_ENROLLMENT_ENABLED") == "1":
+    from app.live_seller_enrollment_intake import router as seller_enrollment_router
+    app.include_router(seller_enrollment_router)
