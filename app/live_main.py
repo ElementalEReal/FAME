@@ -133,6 +133,17 @@ async def fame_live_db_health_probe_startup():
         return
     await asyncio.to_thread(run_live_db_health_probe)
 
+# FAME_LIVE_NONCE_ROLLBACK_PROBE_V1
+# Temporary diagnostic: INSERT in transaction, force rollback, verify no nonce row.
+# No routes, checkout, Stripe calls, or modification of payment gates.
+from app.live_nonce_rollback_probe import run_live_nonce_rollback_probe
+
+@app.on_event("startup")
+async def fame_live_nonce_rollback_probe_startup():
+    if os.environ.get("FAME_LIVE_NONCE_ROLLBACK_PROBE_ENABLED") != "1":
+        return
+    await asyncio.to_thread(run_live_nonce_rollback_probe)
+
 from app.live_reviewer_ping import router as reviewer_ping_router
 app.include_router(reviewer_ping_router)
 
