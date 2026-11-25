@@ -123,6 +123,16 @@ async def fame_snapshot_probe_startup():
     await asyncio.to_thread(_fame_snapshot_probe)
 
 
+# FAME_LIVE_DB_HEALTH_PROBE_V1
+# Read-only startup inspection. No endpoint, no charge, no nonce insertion.
+from app.live_db_health_probe import run_live_db_health_probe
+
+@app.on_event("startup")
+async def fame_live_db_health_probe_startup():
+    if os.environ.get("FAME_LIVE_DB_HEALTH_PROBE_ENABLED") != "1":
+        return
+    await asyncio.to_thread(run_live_db_health_probe)
+
 from app.live_reviewer_ping import router as reviewer_ping_router
 app.include_router(reviewer_ping_router)
 
