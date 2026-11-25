@@ -143,3 +143,31 @@ def fetch_wix_snapshot(listing_id: str, *, account_resolver, transport=None) -> 
         raise PurchaseRejected("LIVE_WIX_SELLER_INVALID")
     account_id, ready = account_resolver(seller)
     return parse_verified_wix_snapshot(data, listing_id, account_id, ready)
+
+
+def verify_wix_buyer_proof(request) -> str:
+    """Verify a Wix-backend-issued, body-bound MEMBER-to-PROFILE attestation.
+
+    Wix MUST derive both IDs from currentMember + requireFameProfile(), not
+    browser-supplied fields. No browser-accessible signing helper is permitted.
+    This only verifies Wix's attestation; it does not manufacture an identity.
+    """
+    member = _safe_member(request.headers.get("x-fame-live-member", ""))
+    profile = _safe_member(request.headers.get("x-fame-live-buyer-profile", ""))
+    proof = request.headers.get("x-fame-buyer-proof", "")
+    ts = request.headers.get("x-fame-timestamp", "")
+    nonce = request.headers.get("x-fame-nonce", "")
+    if not _HEX.fullmatch(proof) or not _NONCE.fullmatch(nonce) or not re.fullmatch(r"[0-9]{10,12}", ts):
+        raise PurchaseRejected("LIVE_WIX_BUYER_PROOF_INVALID")
+    if abs(time.time() - int(ts)) > 300:
+        raise PurchaseRejected("LIVE_WIX_BUYER_PROOF_EXPIRED")
+    raw = getattr(request.state, "live_signed_raw_body", None)
+    if not isinstance(raw, bytes) or len(raw) > 16384:
+        raise PurchaseRejected("LIVE_SIGNED_BODY_UNAVAILABLE")
+    digest = hashlib.sha256(raw).hexdigest()
+    message = "\n".join([request.method.upper(), request.url.path, ts, nonce, digest, member, profile])
+    expected = hmac.new(_secret("FAME_LIVE_BUYER_PROOF_SECRET").encode(),
+                        message.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(proof, expected):
+        raise PurchaseRejected("LIVE_WIX_BUYER_PROOF_INVALID")
+    return profile

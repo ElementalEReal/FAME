@@ -28,7 +28,11 @@ def configure_wix_adapters(app, *, account_resolver):
 def install_live_body_cache(app):
     @app.middleware("http")
     async def cache_live_body(request, call_next):
-        if request.url.path == "/v1/live/catalog/decision":
+        if request.url.path in (
+            "/v1/live/catalog/decision",
+            "/v1/live/catalog/register",
+            "/v1/live/checkout/start",
+        ):
             raw = await request.body()
             if len(raw) > 16384:
                 return JSONResponse(status_code=413, content={"detail":"LIVE_REQUEST_TOO_LARGE"})
